@@ -1,0 +1,14 @@
+[project]
+name = "documentation-fetcher"
+version = "0.1.0"
+description = "Fetch and compile API documentation in markdown format"
+requires-python = ">=3.10"
+
+dependencies = [
+    "requests",
+    "beautifulsoup4",
+    "lxml",
+]
+
+[project.scripts]
+docs = "src.main:main"

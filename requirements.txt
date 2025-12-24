@@ -1,0 +1,7 @@
+# Dependencies
+requests
+beautifulsoup4
+lxml
+chromadb
+ollama
+fastmcp

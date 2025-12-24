@@ -1,0 +1,142 @@
+"""CLI entry point for documentation fetcher."""
+
+import argparse
+from pathlib import Path
+
+from src.modules.gemini.module import GeminiModule
+from src.modules.fastmcp.module import FastMCPModule
+from src.modules.claudecode.module import ClaudeCodeModule
+from src.rag.search import search
+
+
+def fetch_command(args):
+    """Handle the fetch subcommand."""
+    # Determine output directory
+    output_dir = args.output or Path("output") / args.module
+
+    # Run the appropriate module
+    if args.module == "gemini":
+        module = GeminiModule()
+        module.run(output_dir)
+    elif args.module == "fastmcp":
+        module = FastMCPModule()
+        module.run(output_dir)
+    elif args.module == "claudecode":
+        module = ClaudeCodeModule()
+        module.run(output_dir)
+
+
+def search_command(args):
+    """Handle the search subcommand."""
+    # Perform search
+    try:
+        results = search(
+            query=args.query,
+            top_k=args.top_k,
+            collection=args.collection
+        )
+
+        if not results:
+            print("No results found.")
+            return
+
+        # Display results
+        print(f"\nResults for: \"{args.query}\"\n")
+
+        for i, result in enumerate(results, 1):
+            # Print header
+            print(f"[{i}] {result.section or 'Untitled'} (score: {result.score:.3f})")
+            print(f"    Source: {result.source_url}")
+
+            # Print rank information if verbose
+            if args.verbose:
+                ranks = []
+                if result.semantic_rank:
+                    ranks.append(f"semantic={result.semantic_rank}")
+                if result.keyword_rank:
+                    ranks.append(f"keyword={result.keyword_rank}")
+                if ranks:
+                    print(f"    Ranks: {', '.join(ranks)}")
+
+            # Print separator
+            print("    ---")
+
+            # Print full chunk content
+            print(f"    {result.content}")
+            print()
+
+    except Exception as e:
+        print(f"Error during search: {e}")
+        import sys
+        sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Documentation fetcher and RAG search system",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    # Create subparsers for different commands
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+
+    # Fetch subcommand
+    fetch_parser = subparsers.add_parser(
+        "fetch",
+        help="Fetch API documentation in markdown format"
+    )
+    fetch_parser.add_argument(
+        "module",
+        choices=["gemini", "fastmcp", "claudecode"],
+        help="Documentation module to run"
+    )
+    fetch_parser.add_argument(
+        "-o", "--output",
+        type=Path,
+        default=None,
+        help="Output directory (default: output/<module>)"
+    )
+    fetch_parser.set_defaults(func=fetch_command)
+
+    # Search subcommand
+    search_parser = subparsers.add_parser(
+        "search",
+        help="Search indexed documentation using RAG"
+    )
+    search_parser.add_argument(
+        "query",
+        help="Search query string"
+    )
+    search_parser.add_argument(
+        "-n", "--top-k",
+        type=int,
+        default=5,
+        dest="top_k",
+        help="Number of results to return (default: 5)"
+    )
+    search_parser.add_argument(
+        "-c", "--collection",
+        default="gemini",
+        help="Collection to search (default: gemini)"
+    )
+    search_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show detailed output including ranks"
+    )
+    search_parser.set_defaults(func=search_command)
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # If no command specified, show help
+    if not args.command:
+        parser.print_help()
+        return
+
+    # Execute the appropriate command
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
