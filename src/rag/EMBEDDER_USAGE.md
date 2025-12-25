@@ -87,7 +87,7 @@ except ConnectionError as e:
 try:
     embedder = Embedder(model="nonexistent-model")
     # Will show warning but allow initialization
-    
+
     # Error occurs when trying to embed
     vector = embedder.embed_query("test")
 except RuntimeError as e:
@@ -95,17 +95,17 @@ except RuntimeError as e:
     # Output will suggest: ollama pull nonexistent-model
 ```
 
-## Integration with Vector Stores
+## Integration with SQLite Store
 
-Use with ChromaDB or other vector databases:
+Use with the SQLite-based vector store:
 
 ```python
 from src.rag.embedder import Embedder
-from src.rag.store import VectorStore
+from src.rag.sqlite_store import SQLiteStore
 
 # Initialize embedder and vector store
 embedder = Embedder()
-store = VectorStore(collection_name="my_docs")
+store = SQLiteStore(collection_name="my_docs")
 
 # Prepare documents
 documents = [
@@ -117,18 +117,14 @@ documents = [
 # Generate embeddings
 embeddings = embedder.embed(documents)
 
-# Store in vector database
-for i, (doc, embedding) in enumerate(zip(documents, embeddings)):
-    store.add_document(
-        doc_id=f"doc_{i}",
-        content=doc,
-        embedding=embedding
-    )
+# Store in vector database (requires Chunk objects)
+from src.rag.chunker import Chunk
+chunks = [Chunk(content=doc, metadata={"source_url": f"doc_{i}"}) for i, doc in enumerate(documents)]
+store.add(chunks, embeddings)
 
-# Query using embeddings
-query = "search query"
-query_embedding = embedder.embed_query(query)
-results = store.search(query_embedding, top_k=5)
+# Query using hybrid search
+from src.rag.search import search
+results = search("search query", collection="my_docs", top_k=5)
 ```
 
 ## Running the Test Suite

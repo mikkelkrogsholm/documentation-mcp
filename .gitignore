@@ -15,7 +15,7 @@ ENV/
 *.swo
 
 # Project specific
-data/chromadb/
+data/
 output/
 
 # OS

@@ -6,10 +6,10 @@ __all__ = ["Chunk", "chunk_markdown"]
 
 # Conditional imports for optional dependencies
 try:
-    from .store import VectorStore, SearchResult
-    __all__.extend(["VectorStore", "SearchResult"])
+    from .sqlite_store import SQLiteStore, SearchResult
+    __all__.extend(["SQLiteStore", "SearchResult"])
 except (ImportError, ModuleNotFoundError):
-    # ChromaDB not installed
+    # sqlite-vec not installed
     pass
 
 try:

@@ -153,14 +153,16 @@ documentation/
 │   └── rag/
 │       ├── chunker.py          # Markdown-aware chunking
 │       ├── embedder.py         # Ollama bge-m3 embeddings
-│       ├── store.py            # ChromaDB vector store
+│       ├── sqlite_store.py     # SQLite + sqlite-vec vector store
 │       ├── search.py           # Hybrid search with RRF
+│       ├── query_expander.py   # Multi-query expansion (LLM)
+│       ├── reranker.py         # Cross-encoder reranking
 │       └── index.py            # Indexing CLI
 ├── output/                     # Fetched documentation
 │   ├── gemini/
 │   └── fastmcp/
 ├── data/
-│   └── chromadb/               # Vector database
+│   └── docs.db                 # SQLite vector database
 ├── requirements.txt
 └── README.md
 ```
@@ -224,14 +226,16 @@ python -m src.rag.index example
 ### Indexing
 1. Chunk markdown by headers (preserving code blocks)
 2. Generate embeddings via Ollama bge-m3 (1024 dimensions)
-3. Store in ChromaDB with metadata
+3. Store in SQLite with sqlite-vec (vectors) and FTS5 (keywords)
 
 ### Searching
 1. Generate query embedding
-2. Perform semantic search (vector similarity)
-3. Perform keyword search (term matching)
+2. Perform semantic search (sqlite-vec vector similarity)
+3. Perform keyword search (FTS5 BM25)
 4. Combine with Reciprocal Rank Fusion (RRF)
-5. Return ranked results with source URLs
+5. Optionally expand query with LLM variations
+6. Optionally rerank with cross-encoder
+7. Return ranked results with source URLs
 
 ## Configuration
 
@@ -241,9 +245,9 @@ python -m src.rag.index example
 |----------|-------------|---------|
 | `OLLAMA_HOST` | Ollama server URL | `http://localhost:11434` |
 
-### ChromaDB
+### SQLite Database
 
-Vector database stored in `data/chromadb/`. Each documentation source gets its own collection.
+Vector database stored in `data/docs.db`. Each documentation source gets its own collection within the database.
 
 ## Development
 
@@ -295,5 +299,5 @@ MIT
 ## Credits
 
 - [Ollama](https://ollama.ai/) - Local LLM and embeddings
-- [ChromaDB](https://www.trychroma.com/) - Vector database
+- [sqlite-vec](https://github.com/asg017/sqlite-vec) - Vector search for SQLite
 - [FastMCP](https://gofastmcp.com/) - MCP server framework

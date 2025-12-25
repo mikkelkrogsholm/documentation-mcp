@@ -70,7 +70,7 @@ documentation/
 ├── output/                     # Fetched documentation output
 │   └── gemini/
 ├── data/
-│   └── chromadb/               # Vector database storage
+│   └── docs.db                 # SQLite vector database
 ├── requirements.txt
 ├── pyproject.toml
 └── CLAUDE.md
@@ -231,7 +231,7 @@ The MCP server (`src/mcp_server.py`) exposes documentation search as tools that 
 | `docs://collections` | JSON list of all collections (auto-discovered) |
 | `docs://{collection}/pages` | List of all pages in a collection |
 
-Collections are auto-discovered from ChromaDB - no code changes needed when adding new documentation sources.
+Collections are auto-discovered from the SQLite database - no code changes needed when adding new documentation sources.
 
 ### Install in Claude Code
 
