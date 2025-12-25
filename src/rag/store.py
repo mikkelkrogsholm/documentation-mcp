@@ -101,13 +101,16 @@ class VectorStore:
             metadatas.append(metadata)
             embeddings_list.append(embedding)
 
-        # Add to collection (ChromaDB handles duplicates by ID via upsert)
-        self.collection.upsert(
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas,
-            embeddings=embeddings_list
-        )
+        # Add to collection in batches (ChromaDB has a max batch size)
+        batch_size = 5000  # Stay under ChromaDB's 5461 limit
+        for i in range(0, len(ids), batch_size):
+            end = min(i + batch_size, len(ids))
+            self.collection.upsert(
+                ids=ids[i:end],
+                documents=documents[i:end],
+                metadatas=metadatas[i:end],
+                embeddings=embeddings_list[i:end]
+            )
 
     def search(
         self,

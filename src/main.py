@@ -6,6 +6,15 @@ from pathlib import Path
 from src.modules.gemini.module import GeminiModule
 from src.modules.fastmcp.module import FastMCPModule
 from src.modules.claudecode.module import ClaudeCodeModule
+from src.modules.betterauth.module import BetterAuthModule
+from src.modules.drizzle.module import DrizzleModule
+from src.modules.nextintl.module import NextIntlModule
+from src.modules.resend.module import ResendModule
+from src.modules.reactemail.module import ReactEmailModule
+from src.modules.shadcn.module import ShadcnModule
+from src.modules.stripe.module import StripeModule
+from src.modules.nextjs.module import NextjsModule
+from src.modules.svelte.module import SvelteModule
 from src.rag.search import search
 
 
@@ -24,16 +33,58 @@ def fetch_command(args):
     elif args.module == "claudecode":
         module = ClaudeCodeModule()
         module.run(output_dir)
+    elif args.module == "betterauth":
+        module = BetterAuthModule()
+        module.run(output_dir)
+    elif args.module == "drizzle":
+        module = DrizzleModule()
+        module.run(output_dir)
+    elif args.module == "nextintl":
+        module = NextIntlModule()
+        module.run(output_dir)
+    elif args.module == "resend":
+        module = ResendModule()
+        module.run(output_dir)
+    elif args.module == "reactemail":
+        module = ReactEmailModule()
+        module.run(output_dir)
+    elif args.module == "shadcn":
+        module = ShadcnModule()
+        module.run(output_dir)
+    elif args.module == "stripe":
+        module = StripeModule()
+        module.run(output_dir)
+    elif args.module == "nextjs":
+        module = NextjsModule()
+        module.run(output_dir)
+    elif args.module == "svelte":
+        module = SvelteModule()
+        module.run(output_dir)
 
 
 def search_command(args):
     """Handle the search subcommand."""
     # Perform search
     try:
+        # Determine feature flags (enabled by default)
+        use_rerank = not args.no_rerank
+        use_expand = not args.no_expand
+
+        # Show search mode
+        mode_parts = []
+        if use_expand:
+            mode_parts.append("query expansion")
+        if use_rerank:
+            mode_parts.append("reranking")
+        if mode_parts:
+            print(f"Search mode: {' + '.join(mode_parts)}")
+
         results = search(
             query=args.query,
             top_k=args.top_k,
-            collection=args.collection
+            collection=args.collection,
+            rerank=use_rerank,
+            expand_query=use_expand
         )
 
         if not results:
@@ -87,7 +138,7 @@ def main():
     )
     fetch_parser.add_argument(
         "module",
-        choices=["gemini", "fastmcp", "claudecode"],
+        choices=["gemini", "fastmcp", "claudecode", "betterauth", "drizzle", "nextintl", "resend", "reactemail", "shadcn", "stripe", "nextjs", "svelte"],
         help="Documentation module to run"
     )
     fetch_parser.add_argument(
@@ -123,6 +174,18 @@ def main():
         "-v", "--verbose",
         action="store_true",
         help="Show detailed output including ranks"
+    )
+    search_parser.add_argument(
+        "--no-rerank",
+        action="store_true",
+        dest="no_rerank",
+        help="Disable cross-encoder reranking (enabled by default)"
+    )
+    search_parser.add_argument(
+        "--no-expand",
+        action="store_true",
+        dest="no_expand",
+        help="Disable multi-query expansion (enabled by default)"
     )
     search_parser.set_defaults(func=search_command)
 

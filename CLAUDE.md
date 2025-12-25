@@ -30,16 +30,42 @@ documentation/
 │   │   │   ├── __init__.py
 │   │   │   ├── module.py       # Gemini-specific implementation
 │   │   │   └── config.py       # Gemini URLs, selectors, etc.
-│   │   └── fastmcp/
+│   │   ├── fastmcp/
+│   │   │   ├── __init__.py
+│   │   │   ├── module.py       # FastMCP documentation fetcher
+│   │   │   └── config.py       # FastMCP URLs, sitemap config
+│   │   ├── betterauth/
+│   │   │   ├── __init__.py
+│   │   │   ├── module.py       # Better Auth documentation fetcher
+│   │   │   └── config.py       # Better Auth URLs, llms.txt config
+│   │   ├── drizzle/
+│   │   │   ├── __init__.py
+│   │   │   ├── module.py       # Drizzle ORM documentation fetcher
+│   │   │   └── config.py       # Drizzle URLs, HTML→markdown config
+│   │   ├── nextintl/
+│   │   │   ├── __init__.py
+│   │   │   ├── module.py       # next-intl documentation fetcher
+│   │   │   └── config.py       # next-intl URLs, sitemap config
+│   │   ├── resend/
+│   │   │   ├── __init__.py
+│   │   │   ├── module.py       # Resend documentation fetcher
+│   │   │   └── config.py       # Resend URLs, single-file split config
+│   │   ├── reactemail/
+│   │   │   ├── __init__.py
+│   │   │   ├── module.py       # React Email documentation fetcher
+│   │   │   └── config.py       # React Email URLs, sitemap config
+│   │   └── shadcn/
 │   │       ├── __init__.py
-│   │       ├── module.py       # FastMCP documentation fetcher
-│   │       └── config.py       # FastMCP URLs, sitemap config
+│   │       ├── module.py       # shadcn/ui documentation fetcher
+│   │       └── config.py       # shadcn URLs, llms.txt + .md suffix
 │   └── rag/
 │       ├── __init__.py
 │       ├── chunker.py          # Markdown-aware chunking (header-based)
 │       ├── embedder.py         # Ollama bge-m3 embeddings
-│       ├── store.py            # ChromaDB vector store
+│       ├── sqlite_store.py     # SQLite + sqlite-vec vector store
 │       ├── search.py           # Hybrid search (semantic + keyword)
+│       ├── query_expander.py   # Multi-query expansion using LLM
+│       ├── reranker.py         # Cross-encoder reranking (optional)
 │       └── index.py            # Indexing CLI
 ├── output/                     # Fetched documentation output
 │   └── gemini/
@@ -52,9 +78,12 @@ documentation/
 
 ## Dependencies
 
-- Python 3.12 (required for ChromaDB compatibility)
-- Ollama with bge-m3 model (`ollama pull bge-m3`)
-- ChromaDB for vector storage
+- Python 3.12+
+- Ollama with required models:
+  - `bge-m3` for embeddings (`ollama pull bge-m3`)
+  - `llama3.2` for query expansion (optional, `ollama pull llama3.2`)
+- SQLite with sqlite-vec extension (included)
+- sentence-transformers for reranking (optional, `pip install sentence-transformers`)
 
 ## Usage
 
@@ -64,15 +93,40 @@ source .venv/bin/activate
 # Fetch documentation
 python -m src.main fetch gemini
 python -m src.main fetch fastmcp
+python -m src.main fetch betterauth
+python -m src.main fetch drizzle
+python -m src.main fetch nextintl
+python -m src.main fetch resend
+python -m src.main fetch reactemail
+python -m src.main fetch shadcn
 
 # Index for search (requires Ollama running)
 python -m src.rag.index gemini
 python -m src.rag.index fastmcp
+python -m src.rag.index betterauth
+python -m src.rag.index drizzle
+python -m src.rag.index nextintl
+python -m src.rag.index resend
+python -m src.rag.index reactemail
+python -m src.rag.index shadcn
 python -m src.rag.index --clear gemini  # Clear and re-index
 
 # Search documentation
 python -m src.main search "function calling"
-python -m src.main search "how to create a tool" -c fastmcp  # Search FastMCP docs
+python -m src.main search "how to create a tool" -c fastmcp      # Search FastMCP docs
+python -m src.main search "two factor auth" -c betterauth        # Search Better Auth docs
+python -m src.main search "migrations" -c drizzle                # Search Drizzle docs
+python -m src.main search "locale" -c nextintl                   # Search next-intl docs
+
+# Advanced search options
+python -m src.main search "query" -n 10                          # More results
+python -m src.main search "query" -v                             # Verbose with rank info
+python -m src.main search "query" --expand                       # Multi-query expansion for better recall
+python -m src.main search "query" --rerank                       # Cross-encoder reranking for better relevance
+python -m src.main search "query" --expand --rerank              # Combine both for best results
+python -m src.main search "send email" -c resend                 # Search Resend docs
+python -m src.main search "button component" -c reactemail       # Search React Email docs
+python -m src.main search "dialog component" -c shadcn           # Search shadcn/ui docs
 python -m src.main search "rate limits" -n 10                # More results
 python -m src.main search "query" -v                         # Verbose with rank info
 ```
@@ -92,16 +146,72 @@ The RAG system enables semantic search across indexed documentation:
 
 1. **Chunker** (`src/rag/chunker.py`): Splits markdown by headers, preserves code blocks
 2. **Embedder** (`src/rag/embedder.py`): Generates embeddings via Ollama bge-m3 (1024 dims)
-3. **Store** (`src/rag/store.py`): ChromaDB with per-source collections
-4. **Search** (`src/rag/search.py`): Hybrid search using reciprocal rank fusion
+3. **Store** (`src/rag/sqlite_store.py`): SQLite + sqlite-vec + FTS5 for hybrid search
+4. **Search** (`src/rag/search.py`): Hybrid search using reciprocal rank fusion (RRF)
+5. **Query Expander** (`src/rag/query_expander.py`): Multi-query expansion using LLM (optional)
+6. **Reranker** (`src/rag/reranker.py`): Cross-encoder reranking for improved relevance (optional)
 
 Each documentation source gets its own collection, allowing filtered searches.
+
+### Search Features
+
+- **Hybrid Search**: Combines semantic (vector) and keyword (FTS5) search with RRF fusion
+- **Multi-Query Expansion** (optional): Uses LLM to generate query variations for better recall
+  - Requires Ollama with a small model (default: llama3.2)
+  - Generates 3-5 alternative phrasings of your query
+  - Searches with each variation and combines results using RRF
+- **Cross-Encoder Reranking** (optional): Uses transformer model to rerank results
+  - Requires `sentence-transformers` package
+  - Provides more accurate relevance scoring
+  - Can be combined with query expansion for best results
 
 ## Gemini Module Notes
 
 - Base URL: `https://ai.google.dev/gemini-api/docs`
 - Markdown trick: Append `.md.txt` to URLs for clean markdown
 - Navigation: Uses `devsite-book-nav` component with sidebar structure
+
+## Better Auth Module Notes
+
+- Base URL: `https://www.better-auth.com`
+- Discovery: Parses `llms.txt` file which lists all documentation pages
+- Markdown: Direct access via `/llms.txt/docs/*.md` paths
+- Coverage: ~150 pages including adapters, plugins, integrations, and guides
+
+## Drizzle ORM Module Notes
+
+- Base URL: `https://orm.drizzle.team`
+- Discovery: Parses `llms.txt` file which lists all documentation URLs
+- Conversion: Fetches HTML pages and converts to markdown via `html2text`
+- Coverage: ~180 pages covering schemas, migrations, queries, and database integrations
+
+## next-intl Module Notes
+
+- Base URL: `https://next-intl.dev`
+- Discovery: Parses sitemap XML for `/docs/` URLs
+- Conversion: Fetches HTML pages and converts to markdown via `html2text`
+- Coverage: ~30 pages covering i18n setup, routing, messages, and formatting
+
+## Resend Module Notes
+
+- Base URL: `https://resend.com`
+- Discovery: Single `llms-full.txt` file containing all documentation
+- Processing: Splits on `# ` headers, extracts source URLs, saves as separate files
+- Coverage: ~227 sections covering API reference, SDKs, integrations, and guides
+
+## React Email Module Notes
+
+- Base URL: `https://react.email`
+- Discovery: Parses sitemap XML at `/docs/sitemap.xml`
+- Conversion: Fetches HTML pages and converts to markdown via `html2text`
+- Coverage: ~52 pages covering components, integrations, setup, and utilities
+
+## shadcn/ui Module Notes
+
+- Base URL: `https://ui.shadcn.com`
+- Discovery: Parses `llms.txt` file which lists all documentation URLs
+- Markdown: Appends `.md` suffix to URLs for direct markdown access
+- Coverage: ~93 pages covering components, installation, theming, forms, and registry
 
 ## MCP Server
 
@@ -118,11 +228,10 @@ The MCP server (`src/mcp_server.py`) exposes documentation search as tools that 
 
 | Resource URI | Description |
 |--------------|-------------|
-| `docs://collections` | JSON list of all collections |
-| `docs://gemini/pages` | List of all Gemini documentation pages |
-| `docs://fastmcp/pages` | List of all FastMCP documentation pages |
-| `docs://gemini/search-help` | Search tips for Gemini docs |
-| `docs://fastmcp/search-help` | Search tips for FastMCP docs |
+| `docs://collections` | JSON list of all collections (auto-discovered) |
+| `docs://{collection}/pages` | List of all pages in a collection |
+
+Collections are auto-discovered from ChromaDB - no code changes needed when adding new documentation sources.
 
 ### Install in Claude Code
 

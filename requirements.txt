@@ -5,3 +5,6 @@ lxml
 chromadb
 ollama
 fastmcp
+html2text
+sqlite-vec
+sentence-transformers

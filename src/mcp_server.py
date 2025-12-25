@@ -25,37 +25,74 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.rag.search import search as rag_search
-from src.rag.store import VectorStore
+from src.rag.sqlite_store import SQLiteStore
 
-# Known collections
-KNOWN_COLLECTIONS = ["gemini", "fastmcp", "claudecode"]
+OUTPUT_PATH = Path(__file__).parent.parent / "output"
+
+
+def get_available_collections() -> list[str]:
+    """Discover all indexed collections from SQLite database."""
+    try:
+        collections = SQLiteStore.list_collections()
+        # Filter to only collections with documents
+        return [c for c in collections if SQLiteStore.collection_count(c) > 0]
+    except Exception:
+        return []
+
+
+def get_collection_description(name: str) -> str:
+    """Get description for a collection from its _index.md or infer from name."""
+    index_file = OUTPUT_PATH / name / "_index.md"
+    if index_file.exists():
+        try:
+            content = index_file.read_text()
+            # Extract first heading as description
+            for line in content.split("\n"):
+                if line.startswith("# "):
+                    return line[2:].strip()
+        except Exception:
+            pass
+    # Fallback: humanize the collection name
+    return f"{name.replace('-', ' ').replace('_', ' ').title()} documentation"
 
 # Create the MCP server
 mcp = FastMCP(
     name="Documentation Search",
-    log_level="WARNING",  # Reduce startup noise for STDIO transport
     instructions="""
-    This server provides access to indexed API documentation for Gemini, FastMCP, and Claude Code.
+    This server provides hybrid semantic + keyword search across indexed API documentation.
+    Search uses multi-query expansion and cross-encoder reranking for high-quality results.
 
-    USE TOOLS FOR:
-    - search_docs: Find documentation by query (semantic + keyword search)
-    - list_collections: See what documentation is available
+    WHEN TO USE THIS SERVER:
+    - User asks about API usage, configuration, or features from indexed documentation
+    - User needs code examples or implementation guidance from official docs
+    - User wants to know "how to" do something with a supported library/framework
 
-    USE RESOURCES FOR:
-    - Browse available collections: docs://collections
-    - List pages in a collection: docs://gemini/pages, docs://fastmcp/pages, or docs://claudecode/pages
-    - Read a specific page by URL
+    HOW TO SEARCH:
+    1. Use search_docs(query, collection) - returns relevant documentation chunks
+    2. Query should be natural language describing what you're looking for
+    3. Specify the collection parameter to search the right documentation
 
-    AVAILABLE COLLECTIONS:
-    - gemini: Google Gemini API documentation (~2000 chunks)
-    - fastmcp: FastMCP framework documentation (~1900 chunks)
-    - claudecode: Claude Code CLI documentation (~48 pages)
+    AVAILABLE COLLECTIONS (use these as the 'collection' parameter):
+    - gemini: Google Gemini API (~2000 chunks) - AI/ML, function calling, embeddings
+    - fastmcp: FastMCP framework (~1900 chunks) - MCP server development, tools, resources
+    - claudecode: Claude Code CLI (~1000 chunks) - hooks, skills, configuration, IDE integration
+    - svelte: Svelte + SvelteKit (~1700 chunks) - runes, components, routing, SSR
+    - nextjs: Next.js framework (~3500 chunks) - React, routing, server components
+    - stripe: Stripe API (~9300 chunks) - payments, subscriptions, webhooks
+    - betterauth: Better Auth (~2000 chunks) - authentication, sessions, OAuth
+    - drizzle: Drizzle ORM (~1300 chunks) - database, queries, migrations
+    - shadcn: shadcn/ui (~1100 chunks) - React components, styling
+    - resend: Resend API (~1200 chunks) - email sending, templates
+    - reactemail: React Email (~350 chunks) - email components
+    - nextintl: next-intl (~230 chunks) - i18n, translations
 
-    EXAMPLE QUERIES:
-    - "function calling" - find docs about function calling
-    - "how to create a tool" - find tool creation guides
-    - "MCP server configuration" - find MCP setup docs
-    - "hooks" - find Claude Code hooks documentation
+    EXAMPLE SEARCHES:
+    - search_docs("function calling", "gemini") - Gemini function calling docs
+    - search_docs("create MCP tool", "fastmcp") - how to create MCP tools
+    - search_docs("hooks configuration", "claudecode") - Claude Code hooks
+    - search_docs("reactive state runes", "svelte") - Svelte 5 runes and reactivity
+    - search_docs("server components", "nextjs") - Next.js server components
+    - search_docs("webhook signatures", "stripe") - Stripe webhook verification
     """
 )
 
@@ -68,7 +105,9 @@ mcp = FastMCP(
 def search_docs(
     query: str,
     collection: str = "gemini",
-    num_results: int = 5
+    num_results: int = 5,
+    expand_query: bool = True,
+    rerank: bool = True
 ) -> str:
     """
     Search indexed documentation using hybrid semantic + keyword search.
@@ -82,11 +121,15 @@ def search_docs(
                - "rate limits and pricing"
                - "streaming responses"
                - "error handling best practices"
-        collection: Which documentation to search. Options:
-                   - "gemini" (default): Google Gemini API docs
-                   - "fastmcp": FastMCP framework docs
+        collection: Which documentation to search (default: "gemini"). Options:
+                   gemini, fastmcp, claudecode, svelte, nextjs, stripe, betterauth,
+                   drizzle, shadcn, resend, reactemail, nextintl
         num_results: Number of results to return (1-20, default: 5).
                     Use more results for broad topics, fewer for specific questions.
+        expand_query: If True, generate query variations for better recall (default: True).
+                     Uses LLM to create alternative phrasings. Slower but may find more relevant results.
+        rerank: If True, use cross-encoder reranking for improved relevance (default: True).
+               Requires sentence-transformers. Slower but more accurate ranking.
 
     Returns:
         Formatted markdown with search results, each containing:
@@ -101,8 +144,11 @@ def search_docs(
     if not query or not query.strip():
         return "Error: Query cannot be empty. Please provide a search term."
 
-    if collection not in KNOWN_COLLECTIONS:
-        return f"Error: Unknown collection '{collection}'. Available: {', '.join(KNOWN_COLLECTIONS)}"
+    available = get_available_collections()
+    if collection not in available:
+        if not available:
+            return "Error: No collections found. Index documentation first with: python -m src.rag.index <module>"
+        return f"Error: Unknown collection '{collection}'. Available: {', '.join(sorted(available))}"
 
     num_results = min(max(1, num_results), 20)
 
@@ -110,7 +156,9 @@ def search_docs(
         results = rag_search(
             query=query,
             top_k=num_results,
-            collection=collection
+            collection=collection,
+            expand_query=expand_query,
+            rerank=rerank
         )
 
         if not results:
@@ -150,34 +198,26 @@ def list_collections() -> str:
         - fastmcp: 1891 documents (FastMCP framework)
     """
     output = ["# Available Documentation Collections\n"]
-    found_any = False
 
-    collection_descriptions = {
-        "gemini": "Google Gemini API - LLM, function calling, embeddings, multimodal",
-        "fastmcp": "FastMCP framework - MCP server/client, tools, resources, auth",
-        "claudecode": "Claude Code CLI - hooks, MCP, plugins, settings, workflows"
-    }
+    available = get_available_collections()
 
-    for name in KNOWN_COLLECTIONS:
-        try:
-            store = VectorStore(collection_name=name)
-            count = store.count()
-            if count > 0:
-                found_any = True
-                desc = collection_descriptions.get(name, "")
-                output.append(f"## {name}")
-                output.append(f"- **Documents:** {count} chunks indexed")
-                output.append(f"- **Content:** {desc}")
-                output.append(f"- **Search:** `search_docs(query, collection=\"{name}\")`\n")
-        except Exception:
-            pass
-
-    if not found_any:
+    if not available:
         output.append("No collections found. Index documentation first:\n")
         output.append("```bash")
-        output.append("python -m src.rag.index gemini")
-        output.append("python -m src.rag.index fastmcp")
+        output.append("python -m src.rag.index <module>")
         output.append("```")
+        return "\n".join(output)
+
+    for name in sorted(available):
+        try:
+            count = SQLiteStore.collection_count(name)
+            desc = get_collection_description(name)
+            output.append(f"## {name}")
+            output.append(f"- **Documents:** {count} chunks indexed")
+            output.append(f"- **Content:** {desc}")
+            output.append(f"- **Search:** `search_docs(query, collection=\"{name}\")`\n")
+        except Exception:
+            pass
 
     return "\n".join(output)
 
@@ -189,46 +229,59 @@ def list_collections() -> str:
 @mcp.resource("docs://collections")
 def get_collections_resource() -> str:
     """
-    List of all available documentation collections.
+    JSON list of all available documentation collections.
 
-    Returns JSON with collection names, document counts, and descriptions.
+    Returns:
+        JSON object with collection metadata including:
+        - name: Collection identifier for search_docs
+        - documents: Number of indexed chunks
+        - description: What documentation this covers
+        - pages_uri: URI to list all pages in this collection
+
+    Use this to programmatically discover available documentation sources.
     """
     import json
 
     collections = []
-    collection_descriptions = {
-        "gemini": "Google Gemini API documentation",
-        "fastmcp": "FastMCP framework documentation",
-        "claudecode": "Claude Code CLI documentation"
-    }
+    available = get_available_collections()
 
-    for name in KNOWN_COLLECTIONS:
+    for name in sorted(available):
         try:
-            store = VectorStore(collection_name=name)
-            count = store.count()
-            if count > 0:
-                collections.append({
-                    "name": name,
-                    "documents": count,
-                    "description": collection_descriptions.get(name, ""),
-                    "pages_uri": f"docs://{name}/pages"
-                })
+            count = SQLiteStore.collection_count(name)
+            collections.append({
+                "name": name,
+                "documents": count,
+                "description": get_collection_description(name),
+                "pages_uri": f"docs://{name}/pages"
+            })
         except Exception:
             pass
 
     return json.dumps({"collections": collections}, indent=2)
 
 
-@mcp.resource("docs://gemini/pages")
-def get_gemini_pages() -> str:
-    """List all indexed pages from Gemini documentation."""
-    return _get_collection_pages("gemini")
+@mcp.resource("docs://{collection}/pages")
+def get_collection_pages_resource(collection: str) -> str:
+    """
+    List all indexed pages from a documentation collection.
 
+    Args:
+        collection: The collection name. Options: gemini, fastmcp, claudecode, svelte,
+                   nextjs, stripe, betterauth, drizzle, shadcn, resend, reactemail, nextintl
 
-@mcp.resource("docs://fastmcp/pages")
-def get_fastmcp_pages() -> str:
-    """List all indexed pages from FastMCP documentation."""
-    return _get_collection_pages("fastmcp")
+    Returns:
+        JSON object with:
+        - collection: The collection name
+        - page_count: Total number of unique pages
+        - pages: Array of {url, title} objects for each documentation page
+
+    Use this to browse what documentation pages are available before searching.
+    """
+    available = get_available_collections()
+    if collection not in available:
+        import json
+        return json.dumps({"error": f"Unknown collection: {collection}", "available": sorted(available)})
+    return _get_collection_pages(collection)
 
 
 def _get_collection_pages(collection: str) -> str:
@@ -236,7 +289,7 @@ def _get_collection_pages(collection: str) -> str:
     import json
 
     try:
-        store = VectorStore(collection_name=collection)
+        store = SQLiteStore(collection_name=collection)
         all_docs = store.get_all_documents()
 
         # Extract unique source URLs
@@ -258,127 +311,6 @@ def _get_collection_pages(collection: str) -> str:
 
     except Exception as e:
         return json.dumps({"error": str(e)})
-
-
-@mcp.resource("docs://gemini/search-help")
-def gemini_search_help() -> str:
-    """Quick reference for searching Gemini documentation."""
-    return """# Gemini Documentation Search Help
-
-## Common Search Queries
-
-### Getting Started
-- "quickstart tutorial"
-- "API key setup"
-- "first API call"
-
-### Core Features
-- "function calling"
-- "structured output JSON"
-- "streaming responses"
-- "multimodal images video"
-
-### Advanced Topics
-- "embeddings semantic search"
-- "context caching"
-- "token counting"
-- "rate limits quotas"
-- "safety settings"
-
-### Code Examples
-- "Python SDK example"
-- "REST API curl"
-- "error handling"
-
-## Search Tips
-1. Use natural language: "how to use function calling"
-2. Combine concepts: "streaming with function calling"
-3. Be specific: "token limit for gemini-pro"
-"""
-
-
-@mcp.resource("docs://fastmcp/search-help")
-def fastmcp_search_help() -> str:
-    """Quick reference for searching FastMCP documentation."""
-    return """# FastMCP Documentation Search Help
-
-## Common Search Queries
-
-### Getting Started
-- "installation quickstart"
-- "create mcp server"
-- "hello world example"
-
-### Tools
-- "tool decorator"
-- "tool parameters"
-- "async tools"
-
-### Resources
-- "resource decorator"
-- "file resource"
-- "resource templates"
-
-### Deployment
-- "http transport"
-- "stdio transport"
-- "docker deployment"
-
-### Integration
-- "claude code integration"
-- "claude desktop setup"
-
-## Search Tips
-1. Use natural language: "how to create a tool"
-2. Search for decorators: "@mcp.tool decorator"
-3. Look for examples: "authentication example"
-"""
-
-
-@mcp.resource("docs://claudecode/pages")
-def get_claudecode_pages() -> str:
-    """List all indexed pages from Claude Code documentation."""
-    return _get_collection_pages("claudecode")
-
-
-@mcp.resource("docs://claudecode/search-help")
-def claudecode_search_help() -> str:
-    """Quick reference for searching Claude Code documentation."""
-    return """# Claude Code Documentation Search Help
-
-## Common Search Queries
-
-### Getting Started
-- "quickstart"
-- "installation setup"
-- "overview"
-
-### Configuration
-- "settings configuration"
-- "MCP server setup"
-- "memory management"
-
-### Features
-- "hooks"
-- "plugins"
-- "slash commands"
-- "subagents"
-
-### IDE Integration
-- "VS Code"
-- "JetBrains"
-- "terminal setup"
-
-### Advanced
-- "headless mode"
-- "GitHub Actions"
-- "enterprise deployment"
-
-## Search Tips
-1. Use natural language: "how to configure MCP servers"
-2. Search for features: "hooks guide"
-3. Look for workflows: "common workflows"
-"""
 
 
 # =============================================================================
@@ -427,9 +359,9 @@ Examples:
         print(f"\nAvailable endpoints:")
         print(f"  Tools:     POST http://{args.host}:{args.port}/mcp")
         print(f"  Resources: GET  http://{args.host}:{args.port}/mcp")
-        mcp.run(transport="http", host=args.host, port=args.port)
+        mcp.run(transport="http", host=args.host, port=args.port, log_level="WARNING")
     else:
-        mcp.run()
+        mcp.run(log_level="WARNING")
 
 
 if __name__ == "__main__":

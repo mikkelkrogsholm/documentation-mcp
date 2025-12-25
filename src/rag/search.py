@@ -2,10 +2,16 @@
 
 from dataclasses import dataclass
 from typing import Optional
-import re
 
 from .embedder import Embedder
-from .store import VectorStore, SearchResult
+from .sqlite_store import SQLiteStore, SearchResult
+from .query_expander import QueryExpander
+
+try:
+    from .reranker import Reranker
+    RERANKER_AVAILABLE = True
+except ImportError:
+    RERANKER_AVAILABLE = False
 
 
 @dataclass
@@ -23,271 +29,30 @@ class HybridSearch:
     """
     Hybrid search combining semantic and keyword search.
 
-    Uses Reciprocal Rank Fusion (RRF) to combine results from:
-    1. Semantic search via embeddings and vector similarity
-    2. Keyword search via simple word matching
+    Uses SQLite with FTS5 and sqlite-vec for efficient hybrid search
+    with Reciprocal Rank Fusion (RRF) ranking.
     """
-
-    # RRF constant - prevents high ranks from dominating
-    RRF_K = 60
 
     def __init__(self, collection_name: str = "gemini"):
         """
-        Initialize with embedder and vector store.
+        Initialize with embedder and SQLite store.
 
         Args:
             collection_name: Name of the collection to search
         """
         self.collection_name = collection_name
         self.embedder = Embedder()
-        self.vector_store = VectorStore(collection_name=collection_name)
-
-    def _normalize_text(self, text: str) -> str:
-        """
-        Normalize text for keyword matching.
-
-        Args:
-            text: Text to normalize
-
-        Returns:
-            Normalized lowercase text
-        """
-        return text.lower().strip()
-
-    def _extract_query_terms(self, query: str) -> list[str]:
-        """
-        Extract search terms from query.
-
-        Args:
-            query: Search query
-
-        Returns:
-            List of normalized query terms
-        """
-        # Normalize and split on whitespace
-        normalized = self._normalize_text(query)
-
-        # Split on whitespace and punctuation, keep words
-        terms = re.findall(r'\b\w+\b', normalized)
-
-        # Remove very short terms (single characters) and common stop words
-        stop_words = {
-            'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
-            'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
-            'to', 'was', 'will', 'with'
-        }
-
-        terms = [t for t in terms if len(t) > 1 and t not in stop_words]
-
-        return terms
-
-    def _keyword_score(self, text: str, query_terms: list[str]) -> float:
-        """
-        Score text by keyword matching.
-
-        Counts how many query terms appear in the text.
-
-        Args:
-            text: Text to score
-            query_terms: List of query terms to search for
-
-        Returns:
-            Score based on term frequency
-        """
-        if not query_terms:
-            return 0.0
-
-        normalized_text = self._normalize_text(text)
-
-        # Count occurrences of each query term
-        total_matches = 0
-        for term in query_terms:
-            # Count how many times this term appears
-            total_matches += normalized_text.count(term)
-
-        # Normalize by number of query terms to get a score
-        # This gives higher scores to documents with more term occurrences
-        return float(total_matches)
-
-    def _semantic_search(
-        self,
-        query: str,
-        top_k: int
-    ) -> list[tuple[SearchResult, int]]:
-        """
-        Perform semantic search.
-
-        Args:
-            query: Search query
-            top_k: Number of results to return
-
-        Returns:
-            List of (SearchResult, rank) tuples
-        """
-        # Generate query embedding
-        query_embedding = self.embedder.embed_query(query)
-
-        # Search vector store
-        results = self.vector_store.search(
-            query_embedding=query_embedding,
-            top_k=top_k
-        )
-
-        # Return with ranks (1-indexed)
-        return [(result, rank + 1) for rank, result in enumerate(results)]
-
-    def _keyword_search(
-        self,
-        query: str,
-        top_k: int,
-        candidate_pool: list[SearchResult]
-    ) -> list[tuple[SearchResult, int]]:
-        """
-        Perform keyword search on candidate documents.
-
-        Args:
-            query: Search query
-            top_k: Number of results to return
-            candidate_pool: Pool of documents to search through
-
-        Returns:
-            List of (SearchResult, rank) tuples
-        """
-        # Extract query terms
-        query_terms = self._extract_query_terms(query)
-
-        if not query_terms:
-            return []
-
-        # Score all candidates
-        scored_docs = []
-        for doc in candidate_pool:
-            # Score based on content and section title
-            content_score = self._keyword_score(doc.content, query_terms)
-            section_score = self._keyword_score(doc.section, query_terms) * 2.0  # Weight section higher
-
-            total_score = content_score + section_score
-
-            if total_score > 0:
-                scored_docs.append((doc, total_score))
-
-        # Sort by score descending
-        scored_docs.sort(key=lambda x: x[1], reverse=True)
-
-        # Take top_k and assign ranks
-        top_docs = scored_docs[:top_k]
-
-        return [(doc, rank + 1) for rank, (doc, _) in enumerate(top_docs)]
-
-    def _get_candidate_pool(self, top_k: int) -> list[SearchResult]:
-        """
-        Get candidate documents for keyword search.
-
-        For efficiency, we use semantic search to get a larger pool,
-        then keyword search ranks within that pool.
-
-        Args:
-            top_k: Number of final results needed
-
-        Returns:
-            List of candidate documents
-        """
-        # Get 3x the requested results to ensure good coverage
-        expanded_k = min(top_k * 3, 50)
-
-        # Get all documents from collection
-        # We'll use a dummy query to get diverse results
-        # In practice, we want ALL documents for true keyword search,
-        # but for efficiency we limit to expanded_k
-
-        # Use the collection's get method to retrieve documents
-        # Since VectorStore doesn't expose a get_all method,
-        # we'll use a very generic embedding to get diverse results
-
-        try:
-            # Create a generic query embedding
-            generic_embedding = self.embedder.embed_query("documentation")
-
-            # Get expanded results
-            results = self.vector_store.search(
-                query_embedding=generic_embedding,
-                top_k=expanded_k
-            )
-
-            return results
-        except Exception:
-            # If search fails, return empty list
-            return []
-
-    def _rrf_score(
-        self,
-        semantic_rank: Optional[int],
-        keyword_rank: Optional[int]
-    ) -> float:
-        """
-        Calculate Reciprocal Rank Fusion score.
-
-        RRF formula: score = Σ 1 / (k + rank_i)
-
-        Args:
-            semantic_rank: Rank from semantic search (None if not found)
-            keyword_rank: Rank from keyword search (None if not found)
-
-        Returns:
-            Combined RRF score
-        """
-        score = 0.0
-
-        if semantic_rank is not None:
-            score += 1.0 / (self.RRF_K + semantic_rank)
-
-        if keyword_rank is not None:
-            score += 1.0 / (self.RRF_K + keyword_rank)
-
-        return score
-
-    def _combine_results(
-        self,
-        semantic_results: list[tuple[SearchResult, int]],
-        keyword_results: list[tuple[SearchResult, int]]
-    ) -> dict[str, tuple[SearchResult, Optional[int], Optional[int]]]:
-        """
-        Combine semantic and keyword results.
-
-        Args:
-            semantic_results: List of (SearchResult, rank) from semantic search
-            keyword_results: List of (SearchResult, rank) from keyword search
-
-        Returns:
-            Dictionary mapping document ID to (SearchResult, semantic_rank, keyword_rank)
-        """
-        combined = {}
-
-        # Add semantic results
-        for result, rank in semantic_results:
-            # Use content hash as key for deduplication
-            key = f"{result.source_url}:{hash(result.content)}"
-            combined[key] = (result, rank, None)
-
-        # Add/update with keyword results
-        for result, rank in keyword_results:
-            key = f"{result.source_url}:{hash(result.content)}"
-
-            if key in combined:
-                # Update existing entry with keyword rank
-                existing_result, semantic_rank, _ = combined[key]
-                combined[key] = (existing_result, semantic_rank, rank)
-            else:
-                # New entry from keyword search only
-                combined[key] = (result, None, rank)
-
-        return combined
+        self.store = SQLiteStore(collection_name=collection_name)
+        self.expander: Optional[QueryExpander] = None  # Lazy initialization
+        self._reranker: Optional[Reranker] = None  # Lazy initialization
 
     def search(
         self,
         query: str,
         top_k: int = 5,
         semantic_weight: float = 0.7,
+        rerank: bool = True,
+        expand_query: bool = True,
     ) -> list[HybridSearchResult]:
         """
         Perform hybrid search combining semantic and keyword search.
@@ -297,73 +62,212 @@ class HybridSearch:
             top_k: Number of results to return
             semantic_weight: Weight for semantic search (0-1). Currently unused,
                            kept for API compatibility. RRF naturally balances results.
+            rerank: If True, use cross-encoder reranking for improved relevance.
+                   Retrieves top 50 candidates and reranks to top_k.
+                   Requires sentence-transformers. Default: True.
+            expand_query: If True, generate query variations for better recall.
+                         Uses LLM to create alternative phrasings. Default: True.
 
         Returns:
-            List of HybridSearchResult ordered by RRF score
+            List of HybridSearchResult ordered by RRF score (or rerank score if enabled)
 
         Example:
             >>> searcher = HybridSearch("gemini")
             >>> results = searcher.search("how to use function calling", top_k=5)
             >>> for r in results:
             ...     print(f"[{r.score:.3f}] {r.section}")
+
+            >>> # With reranking for better relevance
+            >>> results = searcher.search("how to use function calling", top_k=5, rerank=True)
+
+            >>> # With query expansion for better recall
+            >>> results = searcher.search("how to use function calling", top_k=5, expand_query=True)
+
+            >>> # Combine both for best results
+            >>> results = searcher.search("how to use function calling", top_k=5, expand_query=True, rerank=True)
         """
         if not query or not query.strip():
             return []
 
-        # Perform semantic search
-        semantic_results = self._semantic_search(query, top_k=top_k)
+        # Multi-query expansion if requested
+        if expand_query:
+            return self._search_with_expansion(query, top_k, rerank)
 
-        # Get candidate pool for keyword search
-        # Use semantic results + expanded pool for better coverage
-        candidate_pool = [r for r, _ in semantic_results]
+        # Standard single-query search
+        # Determine retrieval size
+        if rerank:
+            if not RERANKER_AVAILABLE:
+                import warnings
+                warnings.warn(
+                    "Reranking requested but sentence-transformers not available. "
+                    "Install with: pip install sentence-transformers. "
+                    "Falling back to standard search.",
+                    RuntimeWarning
+                )
+                rerank = False
+                retrieval_k = top_k
+            else:
+                # Retrieve more candidates for reranking
+                retrieval_k = min(50, max(top_k * 10, 50))
+        else:
+            retrieval_k = top_k
 
-        # Add more candidates from expanded search
-        expanded_pool = self._get_candidate_pool(top_k)
+        # Generate query embedding
+        query_embedding = self.embedder.embed_query(query)
 
-        # Combine pools and deduplicate
-        seen = set()
-        for doc in expanded_pool:
-            key = f"{doc.source_url}:{hash(doc.content)}"
-            if key not in seen:
-                seen.add(key)
-                if doc not in candidate_pool:
-                    candidate_pool.append(doc)
-
-        # Perform keyword search on candidate pool
-        keyword_results = self._keyword_search(
-            query,
-            top_k=top_k,
-            candidate_pool=candidate_pool
+        # Perform hybrid search in SQLite (handles RRF internally)
+        results = self.store.search(
+            query_embedding=query_embedding,
+            query_text=query,
+            top_k=retrieval_k
         )
 
-        # Combine results
-        combined = self._combine_results(semantic_results, keyword_results)
+        # Convert to HybridSearchResult
+        hybrid_results = [
+            HybridSearchResult(
+                content=r.content,
+                source_url=r.source_url,
+                section=r.section,
+                score=r.score,
+                semantic_rank=r.semantic_rank,
+                keyword_rank=r.keyword_rank
+            )
+            for r in results
+        ]
 
-        # Calculate RRF scores and create HybridSearchResult objects
-        hybrid_results = []
-        for result, semantic_rank, keyword_rank in combined.values():
-            rrf_score = self._rrf_score(semantic_rank, keyword_rank)
+        # Apply reranking if requested
+        if rerank and hybrid_results:
+            # Lazy initialize reranker
+            if self._reranker is None:
+                self._reranker = Reranker()
 
-            hybrid_results.append(HybridSearchResult(
-                content=result.content,
-                source_url=result.source_url,
-                section=result.section,
-                score=rrf_score,
-                semantic_rank=semantic_rank,
-                keyword_rank=keyword_rank
+            # Rerank and update scores
+            reranked = self._reranker.rerank(query, hybrid_results, top_k=top_k)
+
+            # Update scores with rerank scores
+            for rerank_result in reranked:
+                rerank_result.original_result.score = rerank_result.rerank_score
+
+            return [r.original_result for r in reranked]
+
+        return hybrid_results
+
+    def _search_with_expansion(self, query: str, top_k: int, rerank: bool = False) -> list[HybridSearchResult]:
+        """
+        Search with multi-query expansion using RRF fusion.
+
+        Args:
+            query: Original search query
+            top_k: Number of final results to return
+            rerank: If True, apply reranking after fusion
+
+        Returns:
+            List of HybridSearchResult ordered by combined RRF score
+        """
+        # Lazy initialize expander
+        if self.expander is None:
+            self.expander = QueryExpander()
+
+        # Generate query variations
+        queries = self.expander.expand(query)
+
+        if len(queries) == 1:
+            # Expansion failed or returned only original - fallback to normal search
+            return self.search(query, top_k, expand_query=False, rerank=rerank)
+
+        # Search with each query variation
+        # Use larger pool for fusion (e.g., top_k * 3 per query)
+        pool_size = max(top_k * 3, 20)
+        all_results = []
+
+        for i, q in enumerate(queries):
+            # Generate embedding for this query
+            q_embedding = self.embedder.embed_query(q)
+
+            # Search with this query
+            q_results = self.store.search(
+                query_embedding=q_embedding,
+                query_text=q,
+                top_k=pool_size
+            )
+
+            # Tag results with query index for debugging
+            for r in q_results:
+                all_results.append((i, r))
+
+        # Fusion with RRF across all query results
+        doc_scores = {}  # doc_id -> {'data': ..., 'rrf_contributions': []}
+
+        for query_idx, result in all_results:
+            doc_id = self.store._generate_id(result.content, result.source_url)
+
+            if doc_id not in doc_scores:
+                doc_scores[doc_id] = {
+                    'content': result.content,
+                    'source_url': result.source_url,
+                    'section': result.section,
+                    'rrf_contributions': []
+                }
+
+            # Add RRF contribution from this query result
+            # Use the already computed RRF score from individual query
+            doc_scores[doc_id]['rrf_contributions'].append(result.score)
+
+        # Combine RRF scores across queries
+        final_results = []
+        for doc_id, data in doc_scores.items():
+            # Sum RRF contributions from all queries
+            combined_score = sum(data['rrf_contributions'])
+
+            final_results.append(HybridSearchResult(
+                content=data['content'],
+                source_url=data['source_url'],
+                section=data['section'],
+                score=combined_score,
+                semantic_rank=None,  # Multi-query doesn't have single rank
+                keyword_rank=None
             ))
 
-        # Sort by RRF score descending
-        hybrid_results.sort(key=lambda x: x.score, reverse=True)
+        # Sort by combined score
+        final_results.sort(key=lambda x: x.score, reverse=True)
 
-        # Return top_k results
-        return hybrid_results[:top_k]
+        # Apply reranking if requested
+        if rerank and final_results:
+            if not RERANKER_AVAILABLE:
+                import warnings
+                warnings.warn(
+                    "Reranking requested but sentence-transformers not available. "
+                    "Install with: pip install sentence-transformers. "
+                    "Skipping reranking.",
+                    RuntimeWarning
+                )
+            else:
+                # Lazy initialize reranker
+                if self._reranker is None:
+                    self._reranker = Reranker()
+
+                # Take larger pool for reranking
+                rerank_pool = min(50, len(final_results))
+                rerank_candidates = final_results[:rerank_pool]
+
+                # Rerank
+                reranked = self._reranker.rerank(query, rerank_candidates, top_k=top_k)
+
+                # Update scores with rerank scores
+                for rerank_result in reranked:
+                    rerank_result.original_result.score = rerank_result.rerank_score
+
+                return [r.original_result for r in reranked]
+
+        return final_results[:top_k]
 
 
 def search(
     query: str,
     top_k: int = 5,
-    collection: str = "gemini"
+    collection: str = "gemini",
+    rerank: bool = True,
+    expand_query: bool = True
 ) -> list[HybridSearchResult]:
     """
     Convenience function for quick hybrid searches.
@@ -372,6 +276,8 @@ def search(
         query: Search query string
         top_k: Number of results to return
         collection: Collection name to search (default: "gemini")
+        rerank: If True, use cross-encoder reranking (default: True)
+        expand_query: If True, use multi-query expansion (default: True)
 
     Returns:
         List of HybridSearchResult ordered by combined score
@@ -383,9 +289,18 @@ def search(
         ...     print(f"[{r.score:.3f}] {r.section}")
         ...     print(f"  Source: {r.source_url}")
         ...     print(f"  Ranks: semantic={r.semantic_rank}, keyword={r.keyword_rank}")
+
+        >>> # With reranking
+        >>> results = search("how to use function calling", rerank=True)
+
+        >>> # With query expansion
+        >>> results = search("how to use function calling", expand_query=True)
+
+        >>> # Combine both
+        >>> results = search("how to use function calling", expand_query=True, rerank=True)
     """
     searcher = HybridSearch(collection_name=collection)
-    return searcher.search(query, top_k=top_k)
+    return searcher.search(query, top_k=top_k, rerank=rerank, expand_query=expand_query)
 
 
 if __name__ == "__main__":

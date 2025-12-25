@@ -1,7 +1,7 @@
 """Indexing CLI for RAG documentation system.
 
 Processes markdown files from output directories, chunks them,
-generates embeddings, and stores in ChromaDB for semantic search.
+generates embeddings, and stores in SQLite for semantic search.
 """
 
 import argparse
@@ -11,7 +11,7 @@ from typing import Optional
 
 from .chunker import chunk_markdown
 from .embedder import Embedder
-from .store import VectorStore
+from .sqlite_store import SQLiteStore
 
 
 def index_documents(source: str, clear: bool = False, output_dir: Optional[Path] = None) -> None:
@@ -42,10 +42,10 @@ def index_documents(source: str, clear: bool = False, output_dir: Optional[Path]
     print(f"Found {len(markdown_files)} markdown files in {output_dir}")
 
     # Initialize components
-    print("\nInitializing embedder and vector store...")
+    print("\nInitializing embedder and SQLite store...")
     try:
         embedder = Embedder()
-        vector_store = VectorStore(collection_name=source)
+        store = SQLiteStore(collection_name=source)
     except Exception as e:
         print(f"Error initializing components: {e}", file=sys.stderr)
         print("\nMake sure Ollama is running with the bge-m3 model:", file=sys.stderr)
@@ -55,7 +55,7 @@ def index_documents(source: str, clear: bool = False, output_dir: Optional[Path]
     # Clear existing index if requested
     if clear:
         print(f"\nClearing existing index for '{source}'...")
-        vector_store.clear()
+        store.clear()
         print("Index cleared.")
 
     # Process all files
@@ -107,17 +107,17 @@ def index_documents(source: str, clear: bool = False, output_dir: Optional[Path]
 
     print(f"Generated {len(all_embeddings)} embeddings")
 
-    # Store in vector database
-    print("\nStoring in ChromaDB...")
+    # Store in SQLite database
+    print("\nStoring in SQLite...")
     try:
-        vector_store.add(all_chunks, all_embeddings)
+        store.add(all_chunks, all_embeddings)
         print(f"Successfully indexed {len(all_chunks)} chunks")
     except Exception as e:
         print(f"\nError storing embeddings: {e}", file=sys.stderr)
         sys.exit(1)
 
     # Show final stats
-    total_docs = vector_store.count()
+    total_docs = store.count()
     print(f"\nIndexing complete!")
     print(f"Total documents in '{source}' collection: {total_docs}")
 
@@ -129,8 +129,8 @@ def show_status(source: str) -> None:
         source: Documentation source (e.g., "gemini")
     """
     try:
-        vector_store = VectorStore(collection_name=source)
-        count = vector_store.count()
+        store = SQLiteStore(collection_name=source)
+        count = store.count()
 
         print(f"\nIndex Status for '{source}':")
         print(f"  Total documents: {count}")
